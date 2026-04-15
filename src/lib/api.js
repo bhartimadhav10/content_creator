@@ -118,16 +118,129 @@ export async function facebookSearch({ pageUrls, resultsLimit = 30 }) {
   })).sort((a, b) => b.likes - a.likes)
 }
 
-// ---------- YouTube transcript (via Worker) ----------
-export async function fetchYouTubeTranscript(videoId) {
+// ---------- YouTube transcript (Worker + browser-side fallbacks) ----------
+// Tries in order: (1) Cloudflare Worker, (2) youtubetranscript.com public API,
+// (3) allorigins CORS proxy → scrape ytInitialPlayerResponse → fetch timedtext.
+// Returns '' only when every path fails.
+
+function decodeHtml(s = '') {
+  return s
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n))
+}
+
+// Apify free actor — uses existing $5/mo free credit on your token.
+// Actor ID is configurable in Settings (KEYS.APIFY_TRANSCRIPT_ACTOR); defaults below.
+async function viaApify(videoId) {
+  const token = storage.get(KEYS.APIFY)
   const worker = WORKER()
-  if (!worker || !videoId) return ''
+  if (!token || !worker) return ''
+  const actor = storage.get(KEYS.APIFY_TRANSCRIPT_ACTOR) || 'topaz_sharingan~Youtube-Transcript-Scraper-1'
+  const videoUrl = `https://www.youtube.com/watch?v=${videoId}`
+  const inputs = [
+    { startUrls: [{ url: videoUrl }] },
+    { videoUrls: [videoUrl] },
+    { urls: [videoUrl] },
+    { youtubeVideoUrl: videoUrl }
+  ]
+  for (const input of inputs) {
+    try {
+      const r = await fetch(`${worker}/run-sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, actor, input })
+      })
+      if (!r.ok) continue
+      const data = await r.json()
+      const items = Array.isArray(data) ? data : (data?.items || [])
+      if (!items.length) continue
+      const parts = []
+      for (const it of items) {
+        if (typeof it?.transcript === 'string') parts.push(it.transcript)
+        else if (Array.isArray(it?.transcript)) parts.push(it.transcript.map(x => x.text || x.snippet || '').join(' '))
+        else if (typeof it?.text === 'string') parts.push(it.text)
+        else if (Array.isArray(it?.captions)) parts.push(it.captions.map(x => x.text || '').join(' '))
+        else if (Array.isArray(it?.data)) parts.push(it.data.map(x => x.text || x.snippet || '').join(' '))
+      }
+      const out = parts.filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
+      if (out.length > 50) return out
+    } catch (e) { /* try next input shape */ }
+  }
+  return ''
+}
+
+async function viaWorker(videoId) {
+  const worker = WORKER()
+  if (!worker) return ''
   try {
     const r = await fetch(`${worker}/youtube/transcript?videoId=${encodeURIComponent(videoId)}`)
     if (!r.ok) return ''
     const j = await r.json()
     return j.transcript || ''
   } catch { return '' }
+}
+
+async function viaYoutubeTranscriptDotCom(videoId) {
+  try {
+    const r = await fetch(`https://youtubetranscript.com/?server_vid2=${encodeURIComponent(videoId)}`)
+    if (!r.ok) return ''
+    const xml = await r.text()
+    if (!xml.includes('<text')) return ''
+    const parts = [...xml.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)].map(m => decodeHtml(m[1]).replace(/\s+/g, ' ').trim())
+    return parts.filter(Boolean).join(' ')
+  } catch { return '' }
+}
+
+const CORS_PROXIES = [
+  (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+  (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+  (u) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  (u) => `https://proxy.cors.sh/${u}`
+]
+
+async function proxyFetch(url) {
+  for (const mk of CORS_PROXIES) {
+    try {
+      const r = await fetch(mk(url))
+      if (r.ok) {
+        const t = await r.text()
+        if (t && t.length > 100) return t
+      }
+    } catch {}
+  }
+  return ''
+}
+
+async function viaScrape(videoId) {
+  try {
+    const html = await proxyFetch(`https://www.youtube.com/watch?v=${videoId}`)
+    if (!html) { console.warn('[transcript] scrape: all CORS proxies failed'); return '' }
+    const m = html.match(/"captionTracks":(\[.*?\])/)
+    if (!m) { console.warn('[transcript] scrape: no captionTracks in page (captions disabled?)'); return '' }
+    const tracks = JSON.parse(m[1].replace(/\\u0026/g, '&'))
+    const track = tracks.find(t => (t.languageCode || '').startsWith('en')) || tracks[0]
+    if (!track?.baseUrl) { console.warn('[transcript] scrape: no track baseUrl'); return '' }
+    const xml = await proxyFetch(track.baseUrl)
+    if (!xml) { console.warn('[transcript] scrape: timedtext fetch failed'); return '' }
+    const parts = [...xml.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)].map(s => decodeHtml(s[1]).replace(/\s+/g, ' ').trim())
+    return parts.filter(Boolean).join(' ')
+  } catch (e) { console.warn('[transcript] scrape error', e); return '' }
+}
+
+export async function fetchYouTubeTranscript(videoId) {
+  if (!videoId) return ''
+  const providers = [
+    ['apify', viaApify],
+    ['worker', viaWorker],
+    ['youtubetranscript.com', viaYoutubeTranscriptDotCom],
+    ['scrape+proxy', viaScrape]
+  ]
+  for (const [name, fn] of providers) {
+    const out = await fn(videoId)
+    if (out && out.length > 50) { console.log(`[transcript] got ${out.length} chars via ${name}`); return out }
+    console.log(`[transcript] ${name} returned empty`)
+  }
+  return ''
 }
 
 // ---------- Free news (Google News RSS via Worker) ----------
@@ -198,5 +311,140 @@ Return JSON with this exact shape:
 }
 "match" is 1-10 stylistic match to the voice samples.`
   const raw = await groqChat({ system, user, json: true, temperature: 0.8 })
+  return JSON.parse(raw)
+}
+
+// ---------- Creator Tools (additive, isolated from generateScriptAndHooks) ----------
+export function extractYouTubeId(input) {
+  if (!input) return ''
+  const s = String(input).trim()
+  if (/^[A-Za-z0-9_-]{11}$/.test(s)) return s
+  const m = s.match(/(?:v=|\/shorts\/|youtu\.be\/|\/embed\/|\/v\/)([A-Za-z0-9_-]{11})/)
+  return m ? m[1] : ''
+}
+
+export async function fetchYouTubeVideoMeta(videoId) {
+  try {
+    const j = await ytFetch('/youtube/videos', { id: videoId, part: 'snippet,contentDetails,statistics' })
+    const v = j.items?.[0]
+    if (!v) return null
+    return {
+      id: v.id,
+      title: v.snippet?.title || '',
+      channel: v.snippet?.channelTitle || '',
+      description: v.snippet?.description || '',
+      publishedAt: v.snippet?.publishedAt,
+      tags: v.snippet?.tags || [],
+      duration: v.contentDetails?.duration || ''
+    }
+  } catch { return null }
+}
+
+// 1) Long video -> 5 Shorts scripts with timestamps
+export async function generateShortsFromVideo({ transcript, meta, voiceSamples = [], niche = '', creator = '' }) {
+  if (!transcript || !transcript.trim()) throw new Error('No transcript available for this video.')
+  const samplesBlock = voiceSamples.length
+    ? `\nVOICE SAMPLES (mimic this voice precisely):\n${voiceSamples.map((s, i) => `SAMPLE ${i + 1}:\n${s}`).join('\n\n')}\n`
+    : ''
+  const system = `You are an expert short-form editor. Given a long-video transcript, identify the 5 most viral 30-60 second moments and rewrite each as a standalone Shorts/Reels script. Return valid JSON only.`
+  const user = `CREATOR: ${creator || 'Creator'}
+NICHE: ${niche || 'general'}
+VIDEO TITLE: ${meta?.title || 'Untitled'}
+${samplesBlock}
+TRANSCRIPT (may be truncated):
+${transcript.slice(0, 12000)}
+
+Pick 5 distinct standout moments. For each, identify the approximate timestamp in the source and write a fresh <60s Shorts script.
+Return JSON with this exact shape:
+{
+  "shorts": [
+    {
+      "title": "short 3-6 word title",
+      "start": "MM:SS",
+      "end": "MM:SS",
+      "why": "why this moment will pop on Shorts",
+      "script": {
+        "hook": "0-3s attention grabber",
+        "body": "10-45s core value, punchy sentences",
+        "cta": "final 3-5s CTA"
+      },
+      "on_screen_text": ["3-5 bold caption lines for the cut"],
+      "hashtags": ["#tag1","#tag2","#tag3","#tag4","#tag5"]
+    }
+  ]
+}
+Exactly 5 shorts. Timestamps must map to the transcript, not invented.`
+  const raw = await groqChat({ system, user, json: true, temperature: 0.7 })
+  return JSON.parse(raw)
+}
+
+// 2) One video -> full social pack (Twitter thread, LinkedIn, IG caption, Blog)
+export async function generateSocialPack({ transcript, meta, voiceSamples = [], niche = '', creator = '' }) {
+  const samplesBlock = voiceSamples.length
+    ? `\nVOICE SAMPLES (mimic tone):\n${voiceSamples.map((s, i) => `SAMPLE ${i + 1}:\n${s}`).join('\n\n')}\n`
+    : ''
+  const system = `You are a multi-platform content strategist. Given one video, produce a full repurposing pack for Twitter/X, LinkedIn, Instagram, and Blog. Each platform has its own tone and constraints. Return valid JSON only.`
+  const user = `CREATOR: ${creator || 'Creator'}
+NICHE: ${niche || 'general'}
+VIDEO TITLE: ${meta?.title || 'Untitled'}
+${samplesBlock}
+SOURCE CONTENT (transcript or description):
+${(transcript || meta?.description || '').slice(0, 10000)}
+
+Return JSON with this exact shape:
+{
+  "twitter_thread": [
+    { "n": 1, "text": "hook tweet, <270 chars" },
+    { "n": 2, "text": "..." }
+  ],
+  "linkedin_post": {
+    "hook": "first 2 lines (above the fold)",
+    "body": "professional, insight-driven, 900-1500 chars, uses line breaks",
+    "cta": "single closing line",
+    "hashtags": ["#tag1","#tag2","#tag3"]
+  },
+  "instagram_caption": {
+    "hook": "scroll-stopping first line",
+    "body": "story-driven caption, 600-1000 chars",
+    "cta": "engagement prompt",
+    "hashtags": ["10-15 relevant hashtags, mixed sizes"]
+  },
+  "blog_post": {
+    "title": "SEO-friendly title, <70 chars",
+    "meta_description": "<155 chars",
+    "outline": ["H2 section 1","H2 section 2","..."],
+    "markdown": "full blog post in markdown, 600-900 words"
+  }
+}
+Twitter thread: 6-9 tweets, each self-contained, no "1/9" prefix (use n field).`
+  const raw = await groqChat({ system, user, json: true, temperature: 0.7 })
+  return JSON.parse(raw)
+}
+
+// 3) Smart title + description + chapters + tags
+export async function generateVideoMetadata({ transcript, meta, niche = '' }) {
+  const system = `You are a YouTube SEO expert. Given a transcript (and optional current metadata), produce high-CTR title variations, a rich description, chapter markers, and tag keywords. Return valid JSON only.`
+  const user = `NICHE: ${niche || 'general'}
+CURRENT TITLE: ${meta?.title || '(none)'}
+CURRENT DESCRIPTION: ${(meta?.description || '').slice(0, 500)}
+
+TRANSCRIPT (may be truncated):
+${(transcript || '').slice(0, 12000)}
+
+Return JSON with this exact shape:
+{
+  "titles": [
+    { "text": "title option", "style": "curiosity|listicle|contrarian|how_to|question|result", "ctr_score": 8 }
+  ],
+  "description": "full YouTube description (800-1500 chars): 2-line hook, value summary, chapters placeholder 'CHAPTERS:' line, CTA, socials placeholder",
+  "chapters": [
+    { "time": "00:00", "title": "Intro" },
+    { "time": "MM:SS", "title": "..." }
+  ],
+  "tags": ["15-25 tags, lowercase, comma-free, mix broad+niche"],
+  "hashtags": ["#3-5 YouTube-style hashtags"]
+}
+Provide exactly 10 title options. Chapter timestamps must map to the transcript.`
+  const raw = await groqChat({ system, user, json: true, temperature: 0.6 })
   return JSON.parse(raw)
 }

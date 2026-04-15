@@ -33,10 +33,6 @@ export default function Login() {
     setLoading(false)
   }
 
-  const google = async () => {
-    await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin } })
-  }
-
   return (
     <div className="min-h-full grid md:grid-cols-[1.1fr_1fr]">
       {/* Left: hero */}
@@ -84,14 +80,6 @@ export default function Login() {
               {mode === 'signup' ? 'Create account' : 'Sign in'} <ArrowRight size={16}/>
             </Button>
           </form>
-
-          <div className="flex items-center gap-3 text-[11px] font-mono uppercase tracking-widest text-mute">
-            <span className="flex-1 h-px bg-ink/10"/>or<span className="flex-1 h-px bg-ink/10"/>
-          </div>
-
-          <Button variant="outline" className="w-full justify-center !py-3.5" onClick={google}>
-            Continue with Google
-          </Button>
 
           <div className="text-sm text-mute text-center">
             {mode === 'signup' ? 'Already have an account?' : "Don't have one yet?"}{' '}

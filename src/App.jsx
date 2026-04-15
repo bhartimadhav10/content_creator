@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Routes, Route, NavLink, Navigate, Link } from 'react-router-dom'
-import { Youtube, Instagram, Facebook, Mic2, Sparkles, Settings as SettingsIcon, LayoutDashboard, Users, History as HistoryIcon, Menu, X, UserCog } from 'lucide-react'
+import { Youtube, Instagram, Facebook, Mic2, Sparkles, Settings as SettingsIcon, LayoutDashboard, Users, History as HistoryIcon, Menu, X, UserCog, Clapperboard } from 'lucide-react'
 import { AuthProvider, RequireAuth, useAuth } from './lib/auth.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import YouTubeTab from './pages/YouTubeTab.jsx'
@@ -8,6 +8,7 @@ import InstagramTab from './pages/InstagramTab.jsx'
 import FacebookTab from './pages/FacebookTab.jsx'
 import VoiceSamples from './pages/VoiceSamples.jsx'
 import Generate from './pages/Generate.jsx'
+import CreatorTools from './pages/CreatorTools.jsx'
 import Settings from './pages/Settings.jsx'
 import Competitors from './pages/Competitors.jsx'
 import History from './pages/History.jsx'
@@ -23,6 +24,7 @@ const nav = [
   { section: 'create' },
   { to: '/voice', label: 'Voice', Icon: Mic2 },
   { to: '/generate', label: 'Generate', Icon: Sparkles, accent: true },
+  { to: '/creator-tools', label: 'Creator Tools', Icon: Clapperboard, accent: true },
   { to: '/history', label: 'History', Icon: HistoryIcon },
   { section: 'context' },
   { to: '/competitors', label: 'Competitors', Icon: Users },
@@ -108,6 +110,7 @@ export default function App() {
         <Route path="/facebook" element={<RequireAuth><Shell><FacebookTab/></Shell></RequireAuth>} />
         <Route path="/voice" element={<RequireAuth><Shell><VoiceSamples/></Shell></RequireAuth>} />
         <Route path="/generate" element={<RequireAuth><Shell><Generate/></Shell></RequireAuth>} />
+        <Route path="/creator-tools" element={<RequireAuth><Shell><CreatorTools/></Shell></RequireAuth>} />
         <Route path="/history" element={<RequireAuth><Shell><History/></Shell></RequireAuth>} />
         <Route path="/competitors" element={<RequireAuth><Shell><Competitors/></Shell></RequireAuth>} />
         <Route path="/settings" element={<RequireAuth><Shell><Settings/></Shell></RequireAuth>} />

@@ -17,6 +17,7 @@ export const KEYS = {
   GROQ: 'key.groq',
   YOUTUBE: 'key.youtube',
   APIFY: 'key.apify',
+  APIFY_TRANSCRIPT_ACTOR: 'key.apify.transcript_actor',
   WORKER_URL: 'key.worker',
   NICHE: 'pref.niche',
   CREATOR: 'pref.creator',

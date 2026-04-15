@@ -55,3 +55,17 @@ export async function listGenerations(userId, limit = 50) {
   if (error) throw error
   return data || []
 }
+
+// Creator tools (shorts / social pack / metadata)
+export async function saveCreatorTool(userId, { kind, source, payload }) {
+  const { data, error } = await supabase.from('creator_tools').insert({ user_id: userId, kind, source, payload }).select().single()
+  if (error) throw error
+  return data
+}
+export async function listCreatorTools(userId, kind = null, limit = 30) {
+  let q = supabase.from('creator_tools').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(limit)
+  if (kind) q = q.eq('kind', kind)
+  const { data, error } = await q
+  if (error) throw error
+  return data || []
+}
